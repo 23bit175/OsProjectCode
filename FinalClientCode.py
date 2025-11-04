@@ -1,76 +1,47 @@
 import socket
-import struct
-import sys
+import subprocess
+import os
+import threading
 
-SERVER_HOST = "127.0.0.1"
-SERVER_PORT = 7632
-PASSWORD = "letmein"
+HOST = "127.0.0.1"
+PORT = 7632
 
-def send_with_length(sock, data: bytes):
-    sock.sendall(struct.pack("!Q", len(data)))
-    if data:
-        sock.sendall(data)
+def handle_client(conn, addr):
+    print(f"[+] Connected to {addr}")
+    conn.send(b"Connected to the server. You can now run commands.\n")
 
-def recv_all(sock, n):
-    buf = b""
-    while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
-        if not chunk:
-            raise ConnectionError("connection closed")
-        buf += chunk
-    return buf
+    while True:
+        cmd = conn.recv(1024).decode().strip()
+        if not cmd:
+            break
 
-def recv_message(sock):
-    raw = sock.recv(8)
-    if not raw:
-        return None
-    length = struct.unpack("!Q", raw)[0]
-    if length == 0:
-        return ""
-    return recv_all(sock, length).decode(errors="ignore")
+        if cmd.lower() in ["exit", "quit", "bye"]:
+            conn.send(b"Goodbye!\n")
+            break
 
+        if cmd.startswith("cd "):
+            path = cmd[3:].strip()
+            try:
+                os.chdir(os.path.expanduser(path))
+                conn.send(f"Changed directory to {os.getcwd()}\n".encode())
+            except:
+                conn.send(b"cd error\n")
+            continue
+
+        result = subprocess.getoutput(cmd)
+        if result.strip() == "":
+            result = "(No output)"
+        conn.send((result + "\n").encode())
+
+    conn.close()
+    print(f"[-] Disconnected {addr}")
 
 s = socket.socket()
+s.bind((HOST, PORT))
+s.listen(5)
+print(f"Server started on {HOST}:{PORT}")
+print("Waiting for clients...\n")
 
-try:
-    s.connect((SERVER_HOST, SERVER_PORT))
-except Exception as e:
-    print(f"Could not connect: {e}")
-    sys.exit(1)
-
-    
-prompt = recv_message(s)
-if prompt and prompt.startswith("PASSWORD"):
-    send_with_length(s, PASSWORD.encode())
-    auth = recv_message(s)
-    if not auth or not auth.startswith("AUTH_OK"):
-        print("Authentication failed.")
-        s.close()
-        
-    print("Connected to remote shell.\n")
-else:
-    print("Unexpected server response.")
-    s.close()
-    
-
-    
 while True:
-    cmd = input("cmd> ").strip()
-    if not cmd:
-        continue
-    send_with_length(s, cmd.encode())
-    if cmd.lower() in ("exit", "quit", "bye"):
-        print("Closing connection.")
-        break
-
-    try:
-        out = recv_message(s)
-    except ConnectionError:
-        print("Server disconnected.")
-        break
-    if out is None:
-        print("Server closed connection.")
-        break
-
-    print(out, end="")
-s.close()
+    conn, addr = s.accept()
+    threading.Thread(target=handle_client, args=(conn, addr)).start()
